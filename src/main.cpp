@@ -26,7 +26,7 @@
 
 #include "main.h"
 
-#include "ESP32S3vga.h"
+#include "ESP32S3VGA.h"
 #include <GfxWrapper.h>
 #include <Fonts/FreeMonoBoldOblique24pt7b.h>
 #include <Fonts/FreeSerif24pt7b.h>
