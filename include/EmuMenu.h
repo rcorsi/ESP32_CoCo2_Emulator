@@ -48,6 +48,9 @@ void DrawDiskMenuChoose_1(void);
 void DrawMainMenuOptions(void);
 void DrawFirmwareUpdateMenuChoose(void);
 char* Firmware_Choose(void);
+bool MENU_TextEntry(const char *prompt, char *buffer, uint8_t maxLen, bool maskInput);
+void DrawBeckerMenu(void);
+void BeckerMenuChoose(void);
 
 
 #endif

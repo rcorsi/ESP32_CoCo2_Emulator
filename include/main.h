@@ -26,6 +26,7 @@
 #include "SD_MMC.h"
 #include "EmuMenu.h"
 #include "ROMS_Source.h"
+#include "BeckerPort.h"
 #include <EEPROM.h>
 //----------------------
 #define VSYNC_PORT GPIO_NUM_1
@@ -69,6 +70,7 @@ else \
 struct SpecialFunctionStruct
 {
   uint8_t DIRECT_Key_Code;
+  bool DIRECT_Key_Shift;  //True if Shift was held for the current DIRECT_Key_Code (used by menu text entry)
   bool CPU_HALTED_BY_EMULATOR; //CPU Halted because the Emulator is in menus.
   bool PHYSICAL_Drive_Must_Be_Saved; //To Save VIrtual Disk to Physical SD Card.
   bool nmi_pin; //Mapped to CPU pîn NMI
@@ -140,6 +142,14 @@ struct DriveStruct
 #define MENU_N 17
 #define MENU_A 4
 
+//WiFi / Becker Port setup submenu
+#define MENU_W 26  //0x1a
+#define MENU_S 22  //0x16
+#define MENU_P 19  //0x13
+#define MENU_I 12  //0x0c
+#define MENU_O 18  //0x12
+#define MENU_C 6   //0x06
+
 
 
 
@@ -186,6 +196,9 @@ void DoCPU(void);
 #define ROM_FF03 0xff03 - ROM_OFFSET
 #define ROM_FF20 0xff20 - ROM_OFFSET
 #define ROM_FF23 0xff23 - ROM_OFFSET
+//Becker Port (status/data)
+#define ROM_FF41 0xff41 - ROM_OFFSET
+#define ROM_FF42 0xff42 - ROM_OFFSET
 //DISK ACCESS
 #define ROM_FF40 0xff40 - ROM_OFFSET
 #define ROM_FF48 0xff48 - ROM_OFFSET
@@ -199,6 +212,10 @@ void DoCPU(void);
 #define M_FF02 0xff02
 #define M_FF03 0xff03
 #define M_FF20 0xff20
+
+//Becker Port (status/data)
+#define M_FF41 0xff41
+#define M_FF42 0xff42
 
 #define M_FF22 0xff22
 

@@ -20,6 +20,8 @@
 #include "EmuMenu.h"
 #include "main.h"
 #include "ROMS_Source.h"
+#include "BeckerPort.h"
+#include <stdlib.h>
 
 extern uint8_t *MENU_Backup;
 extern uint8_t *MENU_BackupPage2;
@@ -510,6 +512,13 @@ void EMU_Draw_Menu(void)
             vTaskDelay(100);
             break;
         
+        case MENU_W:
+            BeckerMenuChoose();
+            DrawMainMenuOptions();
+            vga->show();
+            vTaskDelay(100);
+            break;
+
         case MENU_ESC:
             vga->clear(0);
             vga->show();
@@ -591,21 +600,240 @@ void DrawMainMenuOptions(void)
     DrawText ("F:",0,3,0,0,255,0);
     DrawText ("irmware Upgrade menu",1,3,0,0,0b11100000,0);
 
-    DrawText ("A",0,4,0,0,255,0);
-    DrawText ("rtifact Colors (NTSC CoCo 2) is ",1,4,0,0,0b11100000,0);
+    DrawText ("W",0,4,0,0,255,0);
+    DrawText ("iFi / Becker Port setup",1,4,0,0,0b11100000,0);
+
+    DrawText ("A",0,5,0,0,255,0);
+    DrawText ("rtifact Colors (NTSC CoCo 2) is ",1,5,0,0,0b11100000,0);
     if (sf.Artefact)
     {
-        DrawText ("ENABLED",33,4,0,0,0b00011100,0);
+        DrawText ("ENABLED",33,5,0,0,0b00011100,0);
     }
     else
     {
-        DrawText ("DISABLED",33,4,0,0,0b11100000,0);
+        DrawText ("DISABLED",33,5,0,0,0b11100000,0);
     }
     
     DrawText ("R",0,25,0,0,255,0);
     DrawText ("eboot ESP32-CoCo",1,25,0,0,0b11100000,0);
     
     return;
+}
+
+
+void DrawBeckerMenu(void)
+{
+    vga->clear(0);
+    vga->show();
+    vga->clear(0);
+    vga->show();
+    DrawText ("WiFi / Becker Port setup:",0,0,0,0,255,0);
+    line(0,10,319,10,0b00011100);
+
+    DrawText ("S",0,2,0,0,255,0);
+    DrawText ("SID:",1,2,0,0,0b11100000,0);
+    DrawText (BeckerConfig.SSID,6,2,0,0,0b00011100,0);
+
+    DrawText ("P",0,4,0,0,255,0);
+    DrawText ("assword: (hidden, press P to (re)enter)",1,4,0,0,0b11100000,0);
+
+    DrawText ("I",0,6,0,0,255,0);
+    DrawText ("P address:",1,6,0,0,0b11100000,0);
+    DrawText (BeckerConfig.ServerIP,12,6,0,0,0b00011100,0);
+
+    DrawText ("O",0,8,0,0,255,0);
+    DrawText ("Port:",1,8,0,0,0b11100000,0);
+    char portBuf[8];
+    snprintf(portBuf, sizeof(portBuf), "%u", BeckerConfig.Port);
+    DrawText (portBuf,7,8,0,0,0b00011100,0);
+
+    DrawText ("C",0,10,0,0,255,0);
+    DrawText ("onnect now (saves settings first)",1,10,0,0,0b11100000,0);
+
+    DrawText ("Status:",0,12,0,0,255,0);
+    if (BeckerPort_IsConnected())
+    {
+        DrawText ("Connected              ",8,12,0,0,0b00011100,0);
+    }
+    else
+    {
+        DrawText ("Not connected          ",8,12,0,0,0b11100000,0);
+    }
+
+    DrawText ("ESC saves and returns to Main Menu.",0,25,0,0,255,0);
+    vga->show();
+}
+
+
+// Simple raw-HID -> ASCII table for free text entry (independent of the
+// CoCo keyboard emulation's ScanArray, since that table always returns
+// uppercase letters regardless of shift and isn't meant for real text).
+static char HidToAscii(uint8_t hidCode, bool shift)
+{
+    if (hidCode >= 0x04 && hidCode <= 0x1D) // a-z / A-Z
+    {
+        char c = 'a' + (hidCode - 0x04);
+        return shift ? (char)(c - 32) : c;
+    }
+    if (hidCode >= 0x1E && hidCode <= 0x27) // 1-9,0 / shifted symbols
+    {
+        static const char unshifted[10] = {'1','2','3','4','5','6','7','8','9','0'};
+        static const char shifted[10]   = {'!','@','#','$','%','^','&','*','(',')'};
+        uint8_t idx = hidCode - 0x1E;
+        return shift ? shifted[idx] : unshifted[idx];
+    }
+    switch (hidCode)
+    {
+        case 0x2C: return ' ';
+        case 0x2D: return shift ? '_' : '-';
+        case 0x2E: return shift ? '+' : '=';
+        case 0x33: return shift ? ':' : ';';
+        case 0x34: return shift ? '"' : '\'';
+        case 0x36: return shift ? '<' : ',';
+        case 0x37: return shift ? '>' : '.';
+        case 0x38: return shift ? '?' : '/';
+        default: return 0; // not printable / not handled
+    }
+}
+
+#define MENU_KEY_BACKSPACE 0x2A
+#define MENU_KEY_ENTER     0x28
+#define MENU_KEY_ESCAPE    0x29
+
+// On-screen text entry field. Returns true (buffer updated) if the user
+// pressed Enter, false (buffer left untouched) if they pressed Escape.
+bool MENU_TextEntry(const char *prompt, char *buffer, uint8_t maxLen, bool maskInput)
+{
+    char work[80];
+    char display[80];
+
+    strncpy(work, buffer, sizeof(work) - 1);
+    work[sizeof(work) - 1] = '\0';
+
+    while (1)
+    {
+        vga->clear(0);
+        vga->show();
+        vga->clear(0);
+        vga->show();
+        DrawText(prompt, 0, 0, 0, 0, 255, 0);
+        line(0, 10, 319, 10, 0b00011100);
+
+        if (maskInput)
+        {
+            uint8_t l = strlen(work);
+            uint8_t i;
+            for (i = 0; i < l && i < sizeof(display) - 1; i++) display[i] = '*';
+            display[i] = '\0';
+        }
+        else
+        {
+            strncpy(display, work, sizeof(display) - 1);
+            display[sizeof(display) - 1] = '\0';
+        }
+
+        DrawText(display, 0, 3, 0, 0, 0b11100000, 0);
+        DrawText("ENTER=accept  ESC=cancel  BACKSPACE=delete", 0, 25, 0, 0, 255, 0);
+        vga->show();
+
+        // Wait for any currently-held key to release, then wait for a
+        // fresh keypress -- avoids inserting the same character repeatedly
+        // while a key is held down.
+        while (sf.DIRECT_Key_Code != 0)
+        {
+            vTaskDelay(2);
+        }
+        while (sf.DIRECT_Key_Code == 0)
+        {
+            vTaskDelay(2);
+        }
+
+        uint8_t key = sf.DIRECT_Key_Code;
+        bool shift = sf.DIRECT_Key_Shift;
+
+        if (key == MENU_KEY_ENTER)
+        {
+            strncpy(buffer, work, maxLen - 1);
+            buffer[maxLen - 1] = '\0';
+            return true;
+        }
+        else if (key == MENU_KEY_ESCAPE)
+        {
+            return false;
+        }
+        else if (key == MENU_KEY_BACKSPACE)
+        {
+            uint8_t l = strlen(work);
+            if (l > 0) work[l - 1] = '\0';
+        }
+        else
+        {
+            char c = HidToAscii(key, shift);
+            uint8_t l = strlen(work);
+            if (c != 0 && l < (maxLen - 1) && l < (sizeof(work) - 1))
+            {
+                work[l] = c;
+                work[l + 1] = '\0';
+            }
+        }
+    }
+}
+
+
+void BeckerMenuChoose(void)
+{
+    DrawBeckerMenu();
+    while (1)
+    {
+        switch (sf.DIRECT_Key_Code)
+        {
+        case MENU_S:
+            MENU_TextEntry("Enter WiFi SSID:", BeckerConfig.SSID, sizeof(BeckerConfig.SSID), false);
+            DrawBeckerMenu();
+            vTaskDelay(200);
+            break;
+        case MENU_P:
+            MENU_TextEntry("Enter WiFi Password:", BeckerConfig.Password, sizeof(BeckerConfig.Password), true);
+            DrawBeckerMenu();
+            vTaskDelay(200);
+            break;
+        case MENU_I:
+            MENU_TextEntry("Enter bridge PC IP address:", BeckerConfig.ServerIP, sizeof(BeckerConfig.ServerIP), false);
+            DrawBeckerMenu();
+            vTaskDelay(200);
+            break;
+        case MENU_O:
+        {
+            char portBuf[8];
+            snprintf(portBuf, sizeof(portBuf), "%u", BeckerConfig.Port);
+            if (MENU_TextEntry("Enter TCP port:", portBuf, sizeof(portBuf), false))
+            {
+                uint32_t p = (uint32_t)atol(portBuf);
+                if (p > 0 && p <= 65535)
+                {
+                    BeckerConfig.Port = (uint16_t)p;
+                }
+            }
+            DrawBeckerMenu();
+            vTaskDelay(200);
+            break;
+        }
+        case MENU_C:
+            BeckerPort_SaveConfig();
+            BeckerPort_ApplyConfig();
+            DrawBeckerMenu();
+            vTaskDelay(500);
+            break;
+        case MENU_ESC:
+            BeckerPort_SaveConfig();
+            vTaskDelay(200);
+            return;
+            break;
+        default:
+            break;
+        }
+        vTaskDelay(2);
+    }
 }
 
 

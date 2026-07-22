@@ -865,6 +865,8 @@ void setup()
 
   InitPeripherals_and_Others();
 
+  BeckerPort_Init();
+
   DISKETTE_LED_OFF();
 
 #define SERIAL1_TX 41
@@ -2330,6 +2332,15 @@ void ManagePeripherals_Read(uint16_t address)
       sf.V_Synch = false; 
 
       break;
+
+    case M_FF41: //Becker Port status
+      rom[ROM_FF41] = BeckerPort_ReadStatus();
+      break;
+
+    case M_FF42: //Becker Port data
+      rom[ROM_FF42] = BeckerPort_ReadData();
+      break;
+
       //All next are drive related--------------------------
 
       
@@ -2640,6 +2651,11 @@ void InitDisks(void)
       case M_FFD8:
       Serial.println("S");
       sf.CPU_Speed = CPU_SLOW;
+      break;
+
+      case M_FF42: //Becker Port data -- "always OK to write" per spec
+        rom[ROM_FF42] = value;
+        BeckerPort_WriteData(value);
       break;
 //----------------Disk Related---------------
    case M_FF40:
@@ -3371,6 +3387,7 @@ void UpdateKeyMap(uint8_t * Data)
     }
     
     sf.DIRECT_Key_Code = Data[2];
+    sf.DIRECT_Key_Shift = (Data[0] & 0b00100010) != 0;  //Left Shift (0x02) or Right Shift (0x20)
     
     for (loop1=2; loop1 !=7; loop1++)
     {
