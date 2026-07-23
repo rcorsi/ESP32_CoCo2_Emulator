@@ -3,9 +3,22 @@
  * Description  : See BeckerPort.h
  ******************************************************************************/
 
+// NOTE: We need access to the USB Soft Host so that we can Pause it as during
+// certain WiFi activities or else the following Panic will occur:
+//
+// Guru Meditation Error: Core  1 panic'ed (Cache disabled but cached memory region accessed).
+//
+// The crash/panic happens because Wi-Fi functions (like NVS flash calibration
+// writes) are disabling the flash cache, while the USB Soft Host library's
+// high-priority interrupt is firing at the exact same time and attempting to
+// read code/data from flash memory.
+//
+
 #include "BeckerPort.h"
 #include "SD_MMC.h"
 #include <WiFi.h>
+
+#include <ESP32-USB-Soft-Host.h>
 
 // Ring buffer size -- must be a power of two.
 #define BECKER_BUF_SIZE 1024
@@ -154,12 +167,31 @@ void BeckerPort_ApplyConfig(void)
   // the Arduino WiFi wrapper's own event loop, not raw socket state.
   WiFi.disconnect(true);
   delay(10);
-  // Don't let the WiFi library write SSID/password into NVS (flash) --
-  // we already persist BeckerConfig to /becker.cfg on the SD card, and
-  // an NVS commit briefly disables the flash cache on both cores, which
-  // crashes the CPU-timer ISR if it fires on the other core mid-write.
-  WiFi.persistent(false);
+
+  // See description at top of file for reason for pausing USB Soft Host
+  USH.TimerPause();
+
   WiFi.begin(BeckerConfig.SSID, BeckerConfig.Password);
+
+  for (auto i=0; i<10; ++i)
+  {
+    if (WiFi.status() == WL_CONNECTED)
+      break;
+    delay(500);
+    Serial.print(".");
+  }
+
+  if (WiFi.status() != WL_CONNECTED)
+  {
+    WiFi.disconnect(true);
+    Serial.println("WiFi failed to connect");
+  }
+  else
+  {
+    Serial.println("WiFi connected");
+  }
+
+  USH.TimerResume();
 
   // The actual TCP socket object (BeckerClient) is only ever touched by
   // BeckerNetworkTask itself, to avoid two cores mutating it at once.
@@ -197,13 +229,33 @@ static void BeckerNetworkTask(void *pvParameters)
     if (!BeckerClient.connected())
     {
       BeckerConnected = false;
-      if (!BeckerClient.connect(BeckerConfig.ServerIP, BeckerConfig.Port))
+      if (BeckerClient.connect(BeckerConfig.ServerIP, BeckerConfig.Port))
       {
+        // Wait a brief moment (10–50ms) for the LWIP socket descriptor to finish settling
+        unsigned long startMilli = millis();
+        while (!BeckerClient.connected() && (millis() - startMilli < 1000))
+        {
+          delay(10);
+        }
+
+        // Now check if it is officially connected and stable
+        if (!BeckerClient.connected())
+        {
+          Serial.printf("BECKER not CONNECTED1, Error: %d\n", errno);
+          vTaskDelay(pdMS_TO_TICKS(1000)); // retry in 1s
+          continue;
+        }
+
+        Serial.println("BECKER CONNECTED");
+        BeckerClient.setNoDelay(true); // Becker traffic is latency sensitive, small packets
+        BeckerConnected = true;
+      }
+      else
+      {
+        Serial.printf("BECKER not CONNECTED2, Error: %d\n", errno);
         vTaskDelay(pdMS_TO_TICKS(1000)); // retry in 1s
         continue;
       }
-      BeckerClient.setNoDelay(true); // Becker traffic is latency sensitive, small packets
-      BeckerConnected = true;
     }
 
     // ---- Drain TxRing (CoCo -> server) ----
@@ -246,19 +298,12 @@ void BeckerPort_Init(void)
 
   BeckerPort_LoadConfig();
 
+  // See description at top of file for reason for pausing USB Soft Host
+  USH.TimerPause();
+
   WiFi.mode(WIFI_STA);
-  // Don't let the WiFi library write SSID/password into NVS (flash) --
-  // we already persist BeckerConfig to /becker.cfg on the SD card, and
-  // an NVS commit briefly disables the flash cache on both cores, which
-  // crashes the CPU-timer ISR if it fires on the other core mid-write.
-  // (This is the fix for the "Cache disabled but cached memory region
-  // accessed" panic that shows up shortly after "Start timer" in the
-  // serial log the first time WiFi is brought up.)
-  WiFi.persistent(false);
-  WiFi.begin(BeckerConfig.SSID, BeckerConfig.Password);
-  // Deliberately not blocking setup() here -- BeckerNetworkTask waits for
-  // WiFi.status() == WL_CONNECTED on its own, so a slow/unavailable AP
-  // doesn't hold up emulator boot.
+
+  USH.TimerResume();
 
   xTaskCreatePinnedToCore(
       BeckerNetworkTask,
