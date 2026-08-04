@@ -33,8 +33,7 @@ typedef struct
 extern BeckerConfig_t BeckerConfig;
 
 // Call once from setup(). Loads config from SD (or falls back to the
-// compiled-in defaults), starts WiFi (non-blocking), and starts the
-// network task.
+// compiled-in defaults), and starts the network task.
 void BeckerPort_Init(void);
 
 // Load/save BeckerConfig to/from "/becker.cfg" on the SD card.
@@ -45,7 +44,10 @@ void BeckerPort_SaveConfig(void);
 // to drop the current connection and reconnect with the new settings.
 // Safe to call from any task/core -- the actual socket teardown happens
 // inside BeckerNetworkTask itself.
-void BeckerPort_ApplyConfig(void);
+void BeckerPort_WifiConnect(void);
+void BeckerPort_WifiDisconnect(void);
+void BeckerPort_BeckerPortConnect(void);
+void BeckerPort_BeckerPortDisconnect(void);
 
 // ISR-safe accessors -- call only from ManagePeripherals_Read/Write.
 uint8_t IRAM_ATTR BeckerPort_ReadStatus(void);
@@ -53,6 +55,12 @@ uint8_t IRAM_ATTR BeckerPort_ReadData(void);
 void IRAM_ATTR BeckerPort_WriteData(uint8_t value);
 
 // For the emulator menu / debug prints.
+bool BeckerPort_WifiIsConnected(void);
+int BeckerPort_WifiStatus(void);
 bool BeckerPort_IsConnected(void);
+char *BeckerPort_ErrorString(void);
+void BeckerPort_SetErrorValue(int en);
+char *BeckerPort_LocalIp(void);
+
 
 #endif

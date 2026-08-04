@@ -14,9 +14,11 @@
 // read code/data from flash memory.
 //
 
+#include <WiFi.h>
+#include <WiFiClient.h>
+
 #include "BeckerPort.h"
 #include "SD_MMC.h"
-#include <WiFi.h>
 
 #include <ESP32-USB-Soft-Host.h>
 
@@ -37,8 +39,10 @@ static BeckerRing_t RxRing;
 static BeckerRing_t TxRing;
 
 static WiFiClient BeckerClient;
-static volatile bool BeckerConnected = false;
+static volatile bool BeckerPortWifiConnected = false;
+static volatile bool BeckerPortConnected = false;
 static volatile bool BeckerReconnectRequested = false;
+static volatile bool BeckerConnectRequested = false;
 
 #define BECKER_CFG_FILE "/becker.cfg"
 
@@ -112,10 +116,45 @@ void IRAM_ATTR BeckerPort_WriteData(uint8_t value)
   Ring_Push(&TxRing, value); // dropped only if the CoCo massively outruns WiFi
 }
 
+bool BeckerPort_WifiIsConnected(void)
+{
+  return BeckerPortWifiConnected;
+}
+
+int BeckerPort_WifiStatus(void)
+{
+  return WiFi.status();
+}
+
 bool BeckerPort_IsConnected(void)
 {
-  return BeckerConnected;
+  return BeckerPortConnected;
 }
+
+#define CONNECT_ERROR_SIZE 80
+static char bp_errorValue[CONNECT_ERROR_SIZE] = {};
+
+char *BeckerPort_ErrorString(void)
+{
+  return bp_errorValue;
+}
+
+void BeckerPort_SetErrorValue(int en)
+{
+  snprintf(bp_errorValue, CONNECT_ERROR_SIZE, "(%d) %s", en, strerror(en));
+  bp_errorValue[CONNECT_ERROR_SIZE - 1] = 0;
+}
+
+char *BeckerPort_LocalIp(void)
+{
+  static char ipBuff[80];
+  IPAddress ip = WiFi.localIP();
+
+  snprintf(ipBuff, sizeof(ipBuff), "IP: %d.%d.%d.%d", ip[0], ip[1], ip[2], ip[3]);
+  return ipBuff;
+}
+
+
 
 // ============================================================================
 // Config persistence -- mirrors the project's existing SaveConfigToSD /
@@ -161,12 +200,50 @@ void BeckerPort_SaveConfig(void)
   Serial.println("[Becker] Config saved to SD.");
 }
 
-void BeckerPort_ApplyConfig(void)
+static void clientDisconnection(void)
+{
+  // flush out remaining data
+  BeckerClient.flush();
+
+  // close connection
+  BeckerClient.stop();
+
+  BeckerPortConnected = false;
+
+  // Give lwIP a brief breathing window to reclaim heap memory
+  delay(50);
+}
+
+void BeckerPort_BeckerPortDisconnect(void)
+{
+  clientDisconnection();
+}
+
+void BeckerPort_BeckerPortConnect(void)
+{
+  // The actual TCP socket object (BeckerClient) is only ever touched by
+  // BeckerNetworkTask itself, to avoid two cores mutating it at once.
+  // This flag tells that task to drop its current connection and pick
+  // up the (possibly changed) ServerIP/Port on its next pass.
+  BeckerReconnectRequested = true;
+}
+
+void BeckerPort_WifiDisconnect(void)
 {
   // WiFi.* calls are fine to make from any task/core -- they go through
   // the Arduino WiFi wrapper's own event loop, not raw socket state.
   WiFi.disconnect(true);
+  BeckerPortWifiConnected = false;
   delay(10);
+}
+
+void BeckerPort_WifiConnect(void)
+{
+  // allow other tasks to run (e.g. so USB Soft Host updates keymap)
+  vTaskDelay(25);
+
+  // disconnect Becker Client in case currently connected
+  clientDisconnection();
 
   // See description at top of file for reason for pausing USB Soft Host
   USH.TimerPause();
@@ -181,28 +258,24 @@ void BeckerPort_ApplyConfig(void)
     Serial.print(".");
   }
 
+  USH.TimerResume();
+
   if (WiFi.status() != WL_CONNECTED)
   {
     WiFi.disconnect(true);
     Serial.println("WiFi failed to connect");
+    BeckerPortWifiConnected = false;
   }
   else
   {
     Serial.println("WiFi connected");
+    BeckerPortWifiConnected = true;
   }
 
-  USH.TimerResume();
-
-  // The actual TCP socket object (BeckerClient) is only ever touched by
-  // BeckerNetworkTask itself, to avoid two cores mutating it at once.
-  // This flag tells that task to drop its current connection and pick
-  // up the (possibly changed) ServerIP/Port on its next pass.
-  BeckerReconnectRequested = true;
 }
 
 // ============================================================================
-// Networking task -- normal FreeRTOS task, NOT ISR context. Owns the actual
-// TCP socket and is the only thing that ever calls into WiFiClient.
+// Networking task -- normal FreeRTOS task, NOT ISR context.
 // ============================================================================
 
 static void BeckerNetworkTask(void *pvParameters)
@@ -212,28 +285,33 @@ static void BeckerNetworkTask(void *pvParameters)
 
   for (;;)
   {
-    if (BeckerReconnectRequested)
-    {
-      BeckerClient.stop();
-      BeckerConnected = false;
-      BeckerReconnectRequested = false;
-    }
-
     if (WiFi.status() != WL_CONNECTED)
     {
-      BeckerConnected = false;
-      vTaskDelay(pdMS_TO_TICKS(500));
+      vTaskDelay(500);
       continue;
     }
 
-    if (!BeckerClient.connected())
+    if (BeckerReconnectRequested && !BeckerConnectRequested)
     {
-      BeckerConnected = false;
+      BeckerPort_SetErrorValue(0);
+      clientDisconnection();
+      BeckerReconnectRequested = false;
+      BeckerConnectRequested = true;
+    }
+
+    if (BeckerConnectRequested && !BeckerClient.connected())
+    {
       if (BeckerClient.connect(BeckerConfig.ServerIP, BeckerConfig.Port))
+      {
+        Serial.println("BECKER CONNECTED!");
+        BeckerPortConnected = true;
+        delay(10);
+      }
+      else
       {
         // Wait a brief moment (10–50ms) for the LWIP socket descriptor to finish settling
         unsigned long startMilli = millis();
-        while (!BeckerClient.connected() && (millis() - startMilli < 1000))
+        while (!BeckerClient.connected() && (millis() - startMilli < 5000))
         {
           delay(10);
         }
@@ -241,21 +319,25 @@ static void BeckerNetworkTask(void *pvParameters)
         // Now check if it is officially connected and stable
         if (!BeckerClient.connected())
         {
-          Serial.printf("BECKER not CONNECTED1, Error: %d\n", errno);
-          vTaskDelay(pdMS_TO_TICKS(1000)); // retry in 1s
+          BeckerPort_SetErrorValue(errno);
+          Serial.printf("BECKER not CONNECTED, Error: %d\n", errno);
+          delay(500);
           continue;
         }
 
-        Serial.println("BECKER CONNECTED");
-        BeckerClient.setNoDelay(true); // Becker traffic is latency sensitive, small packets
-        BeckerConnected = true;
+        Serial.println("BECKER CONNECTED!!");
+        BeckerPortConnected = true;
+        delay(10);
       }
-      else
-      {
-        Serial.printf("BECKER not CONNECTED2, Error: %d\n", errno);
-        vTaskDelay(pdMS_TO_TICKS(1000)); // retry in 1s
-        continue;
-      }
+
+      BeckerConnectRequested = false;
+    }
+
+    if (!BeckerClient.connected())
+    {
+      BeckerPortConnected = false;
+      delay(10);
+      continue;
     }
 
     // ---- Drain TxRing (CoCo -> server) ----
@@ -265,6 +347,7 @@ static void BeckerNetworkTask(void *pvParameters)
     {
       txBuf[txCount++] = b;
     }
+
     if (txCount > 0)
     {
       BeckerClient.write(txBuf, txCount);
@@ -287,7 +370,7 @@ static void BeckerNetworkTask(void *pvParameters)
       }
     }
 
-    vTaskDelay(pdMS_TO_TICKS(2)); // short yield, keeps latency low without hogging core 0
+    vTaskDelay(5); // short yield, keeps latency low without hogging core 0
   }
 }
 

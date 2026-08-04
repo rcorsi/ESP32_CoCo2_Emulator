@@ -620,13 +620,10 @@ void DrawMainMenuOptions(void)
     return;
 }
 
-
-void DrawBeckerMenu(void)
+void DrawBeckerMenuStatus(void)
 {
     vga->clear(0);
-    vga->show();
-    vga->clear(0);
-    vga->show();
+
     DrawText ("WiFi / Becker Port setup:",0,0,0,0,255,0);
     line(0,10,319,10,0b00011100);
 
@@ -641,27 +638,50 @@ void DrawBeckerMenu(void)
     DrawText ("P address:",1,6,0,0,0b11100000,0);
     DrawText (BeckerConfig.ServerIP,12,6,0,0,0b00011100,0);
 
-    DrawText ("O",0,8,0,0,255,0);
-    DrawText ("Port:",1,8,0,0,0b11100000,0);
+    DrawText ("N",0,8,0,0,255,0);
+    DrawText ("etwork port:",1,8,0,0,0b11100000,0);
+
     char portBuf[8];
     snprintf(portBuf, sizeof(portBuf), "%u", BeckerConfig.Port);
-    DrawText (portBuf,7,8,0,0,0b00011100,0);
+    DrawText (portBuf,14,8,0,0,0b00011100,0);
 
-    DrawText ("C",0,10,0,0,255,0);
-    DrawText ("onnect now (saves settings first)",1,10,0,0,0b11100000,0);
+    line(0,84,319,84,0b00011100);
 
-    DrawText ("Status:",0,12,0,0,255,0);
-    if (BeckerPort_IsConnected())
+    if (!BeckerPort_WifiIsConnected() || !BeckerPort_IsConnected)
     {
-        DrawText ("Connected              ",8,12,0,0,0b00011100,0);
+      DrawText ("C",0,12,0,0,255,0);
+      DrawText ("onnect to Becker Port",1,12,0,0,0b11100000,0);
     }
     else
     {
-        DrawText ("Not connected          ",8,12,0,0,0b11100000,0);
+      DrawText ("D",0,12,0,0,255,0);
+      DrawText ("isconnect from Becker Port",1,12,0,0,0b11100000,0);
     }
 
+    line(0,113,319,113,0b00011100);
+
+    char connectedBuff[64];
+    snprintf(connectedBuff, sizeof(connectedBuff), "%s (%u) (%s)",
+        BeckerPort_WifiIsConnected() ? "Connected" : "Not connected", BeckerPort_WifiStatus(), BeckerPort_LocalIp());
+    DrawText ("AP Status:",0,16,0,0,255,0);
+    DrawText (connectedBuff,11,16,0,0,0b11100000,0);
+
+    DrawText ("Becker Port Status:",0,18,0,0,255,0);
+    DrawText (BeckerPort_IsConnected() ? "Connected" : "Not connected",20,18,0,0,0b11100000,0);
+
+    DrawText ("Becker Port Error:",0,20,0,0,255,0);
+    DrawText (BeckerPort_ErrorString(),19,20,0,0,0b11100000,0);
+
     DrawText ("ESC saves and returns to Main Menu.",0,25,0,0,255,0);
+
     vga->show();
+}
+
+void DrawBeckerMenu(void)
+{
+    vga->clear(0);
+    vga->show();
+    DrawBeckerMenuStatus();
 }
 
 
@@ -779,7 +799,6 @@ bool MENU_TextEntry(const char *prompt, char *buffer, uint8_t maxLen, bool maskI
     }
 }
 
-
 void BeckerMenuChoose(void)
 {
     DrawBeckerMenu();
@@ -802,11 +821,11 @@ void BeckerMenuChoose(void)
             DrawBeckerMenu();
             vTaskDelay(200);
             break;
-        case MENU_O:
+        case MENU_N:
         {
             char portBuf[8];
             snprintf(portBuf, sizeof(portBuf), "%u", BeckerConfig.Port);
-            if (MENU_TextEntry("Enter TCP port:", portBuf, sizeof(portBuf), false))
+            if (MENU_TextEntry("Enter TCP network port:", portBuf, sizeof(portBuf), false))
             {
                 uint32_t p = (uint32_t)atol(portBuf);
                 if (p > 0 && p <= 65535)
@@ -819,20 +838,32 @@ void BeckerMenuChoose(void)
             break;
         }
         case MENU_C:
+            if (BeckerPort_WifiIsConnected() && BeckerPort_IsConnected())
+                break;
             BeckerPort_SaveConfig();
-            BeckerPort_ApplyConfig();
+            BeckerPort_WifiConnect();
+            BeckerPort_BeckerPortConnect();
             DrawBeckerMenu();
-            vTaskDelay(500);
+            vTaskDelay(200);
+            break;
+        case MENU_D:
+            if (!BeckerPort_WifiIsConnected() && !BeckerPort_IsConnected())
+                break;
+            BeckerPort_SaveConfig();
+            BeckerPort_BeckerPortDisconnect();
+            BeckerPort_WifiDisconnect();
+            DrawBeckerMenu();
+            vTaskDelay(200);
             break;
         case MENU_ESC:
             BeckerPort_SaveConfig();
             vTaskDelay(200);
             return;
-            break;
         default:
             break;
         }
-        vTaskDelay(2);
+        DrawBeckerMenuStatus();
+        vTaskDelay(50);
     }
 }
 
