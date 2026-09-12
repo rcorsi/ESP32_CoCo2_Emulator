@@ -235,35 +235,42 @@ bool ValidFirmwareFile(const char* filename)
     uint8_t byteValue;
     uint8_t StateMachine = 0;
     uint32_t loop1 = 0;
-    // Read the file byte by byte
-    while (file.available())
+
+    uint8_t buf[512]; // Temporary buffer
+    size_t bytesRead;
+
+    // Read the file chunk by chunk
+    while ((bytesRead = file.read(buf, sizeof(buf))) > 0)
     {
-        byteValue = file.read(); // Read one byte
-        if (byteValue== '-' && StateMachine == 0)
+        for (auto i = 0; i < bytesRead; ++i)
         {
-            StateMachine = 1;
-            ValidateSource[loop1] = 0;
-            ValidateSourceConverted = asciiToUint32((char*)ValidateSource);
-            debugln(ValidateCalculated);
-        }
-        if (StateMachine == 0)
-        {
-            if (byteValue > 47 && byteValue < 58)
+            byteValue = buf[i]; // Read one byte
+            if (byteValue == '-' && StateMachine == 0)
             {
-                ValidateSource[loop1++] = byteValue;
+                StateMachine = 1;
+                ValidateSource[loop1] = 0;
+                ValidateSourceConverted = asciiToUint32((char *)ValidateSource);
+                debugln(ValidateCalculated);
             }
-            else
+            if (StateMachine == 0)
             {
-                return false;
+                if (byteValue > 47 && byteValue < 58)
+                {
+                    ValidateSource[loop1++] = byteValue;
+                }
+                else
+                {
+                    return false;
+                }
+                if (loop1 > 14)
+                {
+                    return false;
+                }
             }
-            if (loop1 > 14)
+            else if (StateMachine == 1)
             {
-                return false;
+                ValidateCalculated += byteValue;
             }
-        }
-        else if (StateMachine == 1)
-        {
-            ValidateCalculated+=byteValue;
         }
     }
     debug(ValidateCalculated);
